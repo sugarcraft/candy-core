@@ -1,0 +1,171 @@
+<?php
+
+declare(strict_types=1);
+
+namespace SugarCraft\Core;
+
+use SugarCraft\Core\Util\ColorProfile;
+use SugarCraft\Pty\Contract\Termios;
+use React\EventLoop\LoopInterface;
+
+/**
+ * Tunables for {@see Program}. All fields are optional with sensible defaults.
+ *
+ * @phpstan-type Stream resource
+ */
+final class ProgramOptions
+{
+    /**
+     * @param resource|null $input  stdin replacement; null = STDIN
+     * @param resource|null $output stdout replacement; null = STDOUT
+     */
+    public function __construct(
+        public readonly bool $useAltScreen = false,
+        public readonly bool $catchInterrupts = true,
+        public readonly bool $hideCursor = true,
+        public readonly float $framerate = 60.0,
+        public readonly MouseMode $mouseMode = MouseMode::Off,
+        public readonly bool $reportFocus = false,
+        public readonly bool $bracketedPaste = false,
+        /** Enable DEC mode 2027 (grapheme cluster mode) — Bubble Tea v2 default. */
+        public readonly bool $unicodeMode = true,
+        /**
+         * Inline mode — render only the program's own rows instead of
+         * taking over the viewport. Pairs with `useAltScreen=false`
+         * for CandyScriptui-style prompts that should leave scrollback
+         * intact.
+         */
+        public readonly bool $inlineMode = false,
+        /**
+         * Open the controlling terminal directly (`/dev/tty`) for
+         * input/output instead of using STDIN/STDOUT. Useful when
+         * stdin is piped (`candy-scriptui choose < some.txt`) and the
+         * program still needs to read keys. Falls back to
+         * STDIN/STDOUT when `/dev/tty` isn't available (Windows,
+         * sandboxed envs).
+         */
+        public readonly bool $openTty = false,
+        public readonly mixed $input = null,
+        public readonly mixed $output = null,
+        public readonly ?LoopInterface $loop = null,
+        /**
+         * Override the process environment that goes into the
+         * startup `EnvMsg`. Pass `null` (default) to use the live
+         * `getenv()` snapshot. Useful for tests and for re-parenting
+         * a program with synthetic env state.
+         *
+         * @var array<string,string>|null
+         */
+        public readonly ?array $environment = null,
+        /**
+         * Force the initial window size instead of querying the TTY.
+         * Pass `['cols' => N, 'rows' => N]`. Mostly useful for tests
+         * — production programs should let the runtime ask the TTY
+         * and react to SIGWINCH.
+         *
+         * @var array{cols:int,rows:int}|null
+         */
+        public readonly ?array $windowSize = null,
+        /**
+         * Override the auto-detected colour profile. Forces a
+         * specific tier instead of inferring from `TERM` / `COLORTERM`.
+         */
+        public readonly ?ColorProfile $colorProfile = null,
+        /**
+         * Catch fatal PHP errors / uncaught exceptions during the
+         * program run so the runtime gets a chance to restore the
+         * terminal before the process dies. Defaults to true. Pass
+         * `catchPanics: false` (mirrors Bubble Tea's
+         * `WithoutCatchPanics`) when you want raw stack traces or are
+         * already running under a debugger that does its own state
+         * capture.
+         */
+        public readonly bool $catchPanics = true,
+        /**
+         * Skip rendering entirely. Useful for headless tests that just
+         * want to drive `update()` without painting any output.
+         * Mirrors `WithoutRenderer`.
+         */
+        public readonly bool $withoutRenderer = false,
+        /**
+         * Pre-process every Msg before it reaches `update()`. The
+         * filter receives the current model + the candidate Msg and
+         * returns either the Msg (or a replacement) to dispatch, or
+         * null to drop it. Mirrors `WithFilter`.
+         *
+         * @var ?\Closure(Model, Msg): ?Msg
+         */
+        public readonly ?\Closure $filter = null,
+        /**
+         * Enable the cursed cell-diff renderer. Default `false` —
+         * the line-diff baseline is always correct. Flipping this
+         * on opts into the Bubble Tea v2 algorithm: per-row token-
+         * aware partial repaints that emit dramatically fewer bytes
+         * for slow-changing lines (progress bars, ticking counters).
+         *
+         * Worth turning on for SSH sessions (SugarSshServer) and any
+         * remote / latency-sensitive deployment. Local terminals
+         * notice no difference at typical frame sizes.
+         */
+        public readonly bool $cellDiffRenderer = false,
+        /**
+         * Register no signal handlers at all. Mirrors Bubble Tea's
+         * `WithoutSignalHandler`. When true, the runtime skips
+         * installing handlers for SIGINT / SIGWINCH / SIGTSTP /
+         * SIGCONT regardless of {@see $catchInterrupts}.
+         *
+         * Use this when the calling process already owns signal
+         * handling (e.g. a long-running daemon that wraps Program in
+         * a custom supervisor) and the runtime mustn't clobber the
+         * existing handlers.
+         */
+        public readonly bool $withoutSignalHandler = false,
+        /**
+         * Override the {@see Termios} implementation used for raw-mode
+         * setup / teardown. When null (default), {@see Tty} resolves
+         * via sugar-pty's `TermiosFactory` (FFI primary, stty fallback).
+         *
+         * Production code rarely needs to set this — the factory hits
+         * the right backend for the host. Tests inject a stub Termios
+         * so they can assert `apply()` / `restore()` are called at the
+         * expected points without touching the real terminal state.
+         *
+         * @see plans/sugarcraft-is-a-mono-logical-twilight.md (P4.4)
+         */
+        public readonly ?Termios $termios = null,
+        /**
+         * Optional callback that returns the model's subscriptions.
+         * Called after each update cycle to reconcile the active set.
+         *
+         * @var ?\Closure(Model): ?Subscriptions
+         */
+        public readonly ?\Closure $subscriptions = null,
+        /**
+         * Sanitize bracketed-paste payloads before they reach the model as a
+         * {@see Msg\PasteMsg}. Defaults ON (default-secure).
+         *
+         * A terminal's bracketed-paste content is attacker-influenced — the
+         * user pastes whatever happens to be on the clipboard — so an embedded
+         * OSC-52 clipboard write or other terminal control sequence would
+         * otherwise flow verbatim into the model and, once echoed back to the
+         * screen, could hijack the real terminal (rewrite the clipboard, move
+         * the cursor, desync the frame-diff renderer). When true, paste text is
+         * routed through {@see Util\Sanitize::untrustedForMarkedFrames()}:
+         * every ANSI escape and C0/C1 control byte is stripped, plus the
+         * sugar-mouse zone sentinels (U+E000/U+E001) which a plain ANSI sweep
+         * would miss as well-formed text, while printable text, tabs, and
+         * newlines survive. Set false only when the caller genuinely needs the
+         * raw bytes and sanitizes them itself.
+         */
+        public readonly bool $sanitizePaste = true,
+    ) {
+    }
+
+    /**
+     * Start a fluent builder for {@see ProgramOptions}.
+     */
+    public static function builder(): ProgramOptions\ProgramOptionsBuilder
+    {
+        return new ProgramOptions\ProgramOptionsBuilder();
+    }
+}
